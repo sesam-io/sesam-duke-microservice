@@ -1,0 +1,69 @@
+<DukeMicroService>
+    <RecordLinkage name="countries-dbpedia-mondial">
+
+        <!-- This is the configuration for the Duke component itself. It is very similar to the config-file you
+        would use if you were using Duke as a stand-alone commandline tool. The difference is that the only
+        legal datasource is the "io.sesam.dukemicroservice.DatasetDataSource". -->
+        <duke>
+            <object class="no.priv.garshol.duke.comparators.NumericComparator"
+                    name="AreaComparator">
+                <param name="min-ratio" value="0.7"/>
+            </object>
+
+            <schema>
+                <threshold>0.7</threshold>
+
+                <property>
+                    <name>NAME</name>
+                    <comparator>no.priv.garshol.duke.comparators.Levenshtein</comparator>
+                    <low>0.09</low>
+                    <high>0.93</high>
+                </property>
+                <property>
+                    <name>AREA</name>
+                    <comparator>no.priv.garshol.duke.comparators.NumericComparator</comparator>
+                    <low>0.04</low>
+                    <high>0.73</high>
+                </property>
+                <property>
+                    <name>CAPITAL</name>
+                    <comparator>no.priv.garshol.duke.comparators.Levenshtein</comparator>
+                    <low>0.12</low>
+                    <high>0.61</high>
+                </property>
+            </schema>
+
+            <group>
+                <data-source class="io.sesam.dukemicroservice.IncrementalRecordLinkageDataSource">
+                    <param name="dataset-id" value="countries-dbpedia"/>
+
+                    <column name="country"
+                            property="NAME"
+                            cleaner="no.priv.garshol.duke.examples.CountryNameCleaner"/>
+                    <column name="area"
+                            property="AREA"/>
+                    <column name="capical"
+                            property="CAPITAL"
+                            cleaner="no.priv.garshol.duke.examples.CapitalCleaner"/>
+                </data-source>
+            </group>
+
+            <group>
+                <data-source class="io.sesam.dukemicroservice.IncrementalRecordLinkageDataSource">
+                    <param name="dataset-id" value="countries-mondial"/>
+
+                    <column name="country"
+                            property="NAME"
+                            cleaner="no.priv.garshol.duke.examples.CountryNameCleaner"/>
+                    <column name="capital"
+                            property="CAPITAL"
+                            cleaner="no.priv.garshol.duke.cleaners.LowerCaseNormalizeCleaner"/>
+                    <column name="area"
+                            property="AREA"/>
+                </data-source>
+            </group>
+        </duke>
+
+    </RecordLinkage>
+</DukeMicroService>
+
