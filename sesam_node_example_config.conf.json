@@ -1,0 +1,130 @@
+[
+  {
+    "_id": "countries-dbpedia-to-duke",
+    "type": "pipe",
+    "source": {
+      "type": "dataset",
+      "dataset": "countries-dbpedia.csv"
+    },
+    "sink": {
+      "type": "json",
+      "system": "duke",
+      "url": "http://localhost:4567/recordlinkage/countries-dbpedia-mondial/countries-dbpedia"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "countries-dbpedia-to-duke-deduplication",
+    "type": "pipe",
+    "source": {
+      "type": "dataset",
+      "dataset": "countries-dbpedia.csv"
+    },
+    "sink": {
+      "type": "json",
+      "system": "duke",
+      "url": "http://localhost:4567/deduplication/countries-dbpedia-mondial/countries-dbpedia"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "countries-dbpedia.csv",
+    "type": "pipe",
+    "source": {
+      "type": "csv",
+      "system": "duke-example-data",
+      "field_names": ["id", "country", "area", "capital"],
+      "has_header": false,
+      "primary_key": "id",
+      "url": "https://raw.githubusercontent.com/larsga/Duke/master/doc/example-data/countries-dbpedia.csv"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "countries-mondial-to-duke",
+    "type": "pipe",
+    "source": {
+      "type": "dataset",
+      "dataset": "countries-mondial.csv"
+    },
+    "sink": {
+      "type": "json",
+      "system": "duke",
+      "url": "http://localhost:4567/recordlinkage/countries-dbpedia-mondial/countries-mondial"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "countries-mondial-to-duke-deduplication",
+    "type": "pipe",
+    "source": {
+      "type": "dataset",
+      "dataset": "countries-mondial.csv"
+    },
+    "sink": {
+      "type": "json",
+      "system": "duke",
+      "url": "http://localhost:4567/deduplication/countries-dbpedia-mondial/countries-mondial"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "countries-mondial.csv",
+    "type": "pipe",
+    "source": {
+      "type": "csv",
+      "system": "duke-example-data",
+      "primary_key": "id",
+      "url": "https://raw.githubusercontent.com/larsga/Duke/master/doc/example-data/countries-mondial.csv"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "from-duke-countries-dbpedia-mondial",
+    "type": "pipe",
+    "source": {
+      "type": "json",
+      "system": "duke",
+      "supports_since": true,
+      "url": "http://localhost:4567/recordlinkage/countries-dbpedia-mondial"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "from-duke-countries-dbpedia-mondial-deduplication",
+    "type": "pipe",
+    "source": {
+      "type": "json",
+      "system": "duke",
+      "supports_since": true,
+      "url": "http://localhost:4567/deduplication/countries-dbpedia-mondial"
+    },
+    "pump": {
+      "cron_expression": "0 0 1 1 ?"
+    }
+  },
+  {
+    "_id": "duke",
+    "type": "system:url",
+    "base_url": "http://localhost:4567/"
+  },
+  {
+    "_id": "duke-example-data",
+    "type": "system:url",
+    "base_url": "https://raw.githubusercontent.com/larsga/Duke/master/doc/example-data/"
+  }
+]
