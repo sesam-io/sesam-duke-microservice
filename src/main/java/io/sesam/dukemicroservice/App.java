@@ -55,6 +55,7 @@ import no.priv.garshol.duke.ConfigLoader;
 import no.priv.garshol.duke.Configuration;
 import no.priv.garshol.duke.ConfigurationImpl;
 import no.priv.garshol.duke.DataSource;
+import no.priv.garshol.duke.Database;
 import no.priv.garshol.duke.JDBCLinkDatabase;
 import no.priv.garshol.duke.Link;
 import no.priv.garshol.duke.LinkStatus;
@@ -75,18 +76,24 @@ public class App {
         final IncrementalRecordLinkageMatchListener matchListener;
         final Processor processor;
         final Configuration config;
+        private final JDBCLinkDatabase linkDatabase;
+        private final IncrementalRecordLinkageLuceneDatabase luceneDatabase;
         final Lock lock = new ReentrantLock();
 
         RecordLinkage(String recordLinkageName,
                       String linkMode, Map<String, IncrementalRecordLinkageDataSource> dataSetId2dataSource,
                       IncrementalRecordLinkageMatchListener matchListener, Processor processor,
-                      Configuration config
-        ) {
+                      Configuration config,
+                      JDBCLinkDatabase linkDatabase,
+                      IncrementalRecordLinkageLuceneDatabase luceneDatabase
+                      ) {
             this.recordLinkageName = recordLinkageName;
             this.dataSetId2dataSource = dataSetId2dataSource;
             this.matchListener = matchListener;
             this.processor = processor;
             this.config = config;
+            this.linkDatabase = linkDatabase;
+            this.luceneDatabase = luceneDatabase;
 
             switch(linkMode) {
                 case "one-to-one":
@@ -341,11 +348,15 @@ public class App {
                         groupNoProperty.setIgnoreProperty(true);
                         properties.add(groupNoProperty);
 
+                        PropertyImpl deletedProperty = new PropertyImpl(DELETED_PROPERTY_NAME, null, 0, 0);
+                        deletedProperty.setIgnoreProperty(true);
+                        properties.add(deletedProperty);
+
                         config.setProperties(properties);
 
                         logger.info("    Created the Duke config for the recordLinkage '{}' ok.", recordLinkageName);
 
-                        IncrementalRecordLinkageLuceneDatabase database = new IncrementalRecordLinkageLuceneDatabase();
+                        IncrementalRecordLinkageLuceneDatabase luceneDatabase = new IncrementalRecordLinkageLuceneDatabase();
                         Path luceneFolderPath = recordLinkDataFolder.resolve("lucene-index");
                         File luceneFolderFile = luceneFolderPath.toFile();
                         boolean wasCreated = luceneFolderFile.mkdirs();
@@ -356,8 +367,8 @@ public class App {
                             throw new RuntimeException(String.format("Failed to create the folder '%s'!", luceneFolderPath.toString()));
                         }
                         logger.info("    Using this folder for the lucene index: '{}'.", luceneFolderPath.toString());
-                        database.setPath(luceneFolderPath.toString());
-                        config.setDatabase(database);
+                        luceneDatabase.setPath(luceneFolderPath.toString());
+                        config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
 
                         Path h2DatabasePath = recordLinkDataFolder.resolve("recordlinkdatabase");
@@ -372,10 +383,18 @@ public class App {
 
                         logger.info("    Using this folder for the h2 record-link database: '{}'.", h2DatabasePath.toString());
 
+                        JDBCLinkDatabase linkDatabase = new JDBCLinkDatabase("org.h2.Driver",
+                                                                             "jdbc:h2://" + h2DatabasePath.toString(),
+                                                                             "h2",
+                                                                             null
+                        );
+                        linkDatabase.init();
                         IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = new IncrementalRecordLinkageMatchListener(
-                                this,
                                 recordLinkageName,
-                                h2DatabasePath.toString());
+                                config,
+                                linkDatabase
+                        );
+
                         processor.addMatchListener(incrementalRecordLinkageMatchListener);
 
                         // Load the datasources for the two groups
@@ -429,7 +448,9 @@ public class App {
                                                                                 dataSetId2dataSource,
                                                                                 incrementalRecordLinkageMatchListener,
                                                                                 processor,
-                                                                                config));
+                                                                                config,
+                                                                                linkDatabase,
+                                                                                luceneDatabase));
                     }
                     break;
 
@@ -505,112 +526,72 @@ public class App {
             }
 
             recordLinkage.lock.lock();
+
+            IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
+            if (dataSource == null) {
+                halt(400, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
+            }
+
+            res.type("application/json");
+
+            JsonArray elementsInBatch;
+            // We assume that we get the records in small batches, so that it is ok to load the entire request into memory.
+            String requestBody = req.body();
             try {
+                elementsInBatch = gson.fromJson(requestBody, JsonArray.class);
+            } catch (JsonSyntaxException e) {
+                // The request can contain either an array of entities, or one single entity.
+                JsonObject singleElement = gson.fromJson(requestBody, JsonObject.class);
+                elementsInBatch = new JsonArray();
+                elementsInBatch.add(singleElement);
+            }
 
-                IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
-                if (dataSource == null) {
-                    halt(400, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
+            // use the DataSource for the datasetId to convert the JsonObjects into Record objects.
+            dataSource.setDatasetEntitiesBatch(elementsInBatch);
+            RecordIterator it = dataSource.getRecords();
+            List<Record> records = new LinkedList<>();
+            List<Record> deletedRecords = new LinkedList<>();
+            while (it.hasNext()) {
+                Record record = it.next();
+                if ("true".equals(record.getValue(DELETED_PROPERTY_NAME))) {
+                    deletedRecords.add(record);
+                } else {
+                    records.add(record);
+                }
+            }
+
+            Processor processor = recordLinkage.processor;
+            IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
+
+            IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
+            JDBCLinkDatabase linkDatabase = recordLinkage.linkDatabase;
+            try {
+                // When we get a record with "_deleted"=True, we must do the following:
+                // 1. Delete the record from the lucene index
+                // 2. If the record appears in the RECORDLINKAGE table:
+                //      Mark that row as "deleted=true".
+                //      Mark the other record in that row as needing a rematching (add a row to the RECORDS_THAT_NEEDS_REMATCH table)
+                // 3. If the record appears in the RECORDS_THAT_NEEDS_REMATCH table:
+                //      Delete the row.
+                Set<String> recordsIdThatNeedsReprocessing = new HashSet<>();
+                for (Record record : deletedRecords) {
+                    String recordId = record.getValue("ID");
+
+                    // 1. mark the record as deleted in the lucene index. We cant just delete it alltogether, since we
+                    //    need to do a lookup in lucine in the GET-handler (since the LinkDatabase doesn't contain all
+                    //    the information we need)
+                    database.index(record);
+
+                    // retract all links for this record
+                    for (Link link : linkDatabase.getAllLinksFor(recordId)) {
+                        link.retract();
+                        linkDatabase.assertLink(link);
+                    }
                 }
 
-                res.type("application/json");
-
-                JsonArray elementsInBatch;
-                // We assume that we get the records in small batches, so that it is ok to load the entire request into memory.
-                String requestBody = req.body();
-                try {
-                    elementsInBatch = gson.fromJson(requestBody, JsonArray.class);
-                } catch (JsonSyntaxException e) {
-                    // The request can contain either an array of entities, or one single entity.
-                    JsonObject singleElement = gson.fromJson(requestBody, JsonObject.class);
-                    elementsInBatch = new JsonArray();
-                    elementsInBatch.add(singleElement);
-                }
-
-                // use the DataSource for the datasetId to convert the JsonObjects into Record objects.
-                dataSource.setDatasetEntitiesBatch(elementsInBatch);
-                RecordIterator it = dataSource.getRecords();
-                List<Record> records = new LinkedList<>();
-                List<Record> deletedRecords = new LinkedList<>();
-                while (it.hasNext()) {
-                    Record record = it.next();
-                    if ("true".equals(record.getValue(DELETED_PROPERTY_NAME))) {
-                        deletedRecords.add(record);
-                    } else {
-                        records.add(record);
-                    }
-                }
-
-                Processor processor = recordLinkage.processor;
-                IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
-
-                IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
-
-                try {
-                    // When we get a record with "_deleted"=True, we must do the following:
-                    // 1. Delete the record from the lucene index
-                    // 2. If the record appears in the RECORDLINKAGE table:
-                    //      Mark that row as "deleted=true".
-                    //      Mark the other record in that row as needing a rematching (add a row to the RECORDS_THAT_NEEDS_REMATCH table)
-                    // 3. If the record appears in the RECORDS_THAT_NEEDS_REMATCH table:
-                    //      Delete the row.
-                    Set<String> recordsIdThatNeedsReprocessing = new HashSet<>();
-                    for (Record record : deletedRecords) {
-                        database.delete(record);
-
-                        recordsIdThatNeedsReprocessing.addAll(incrementalRecordLinkageMatchListener.delete(record));
-                    }
-
-                    List<Record> recordsThatNeedsReprocessing = new LinkedList<>();
-                    for (String recordId : recordsIdThatNeedsReprocessing) {
-                        Record record = processor.getDatabase().findRecordById(recordId);
-                        if (record != null) {
-                            app.logger.info("Re-processing the record '{}', because of some other record being deleted. ", recordId);
-                            recordsThatNeedsReprocessing.add(record);
-                        }
-                    }
-                    if (!recordsThatNeedsReprocessing.isEmpty()) {
-                        processor.deduplicate(recordsThatNeedsReprocessing);
-                    }
-
-                    // Process the actual records in the batch.
-                    if (!records.isEmpty()) {
-                        processor.deduplicate(records);
-                    }
-
-                    // The call to deduplicate() might have removed the matches for existing records. In such cases we want to fallback
-                    // to the second best match for the existing records.
-                    int reprocessingRunNumber = 0;
-                    while (true) {
-                        if (reprocessingRunNumber > 10) {
-                            app.logger
-                                    .warn("Giving up reprocessing after {} attempts. Something is odd here; the matches don't seem to settle down...",
-                                          reprocessingRunNumber);
-                            break;
-                        }
-                        reprocessingRunNumber++;
-                        recordsThatNeedsReprocessing.clear();
-                        for (String recordId : incrementalRecordLinkageMatchListener.getRecordIdsThatNeedReprocessing()) {
-                            Record record = processor.getDatabase().findRecordById(recordId);
-                            if (record != null) {
-                                app.logger.info("Reprocessing-run {} processing the record '{}'", reprocessingRunNumber, recordId);
-                                recordsThatNeedsReprocessing.add(record);
-                            } else {
-                                app.logger.warn("Failed to reprocess the record '{}', since it couldn't be found!", recordId);
-                            }
-                        }
-                        incrementalRecordLinkageMatchListener.clearRecordIdsThatNeedReprocessing();
-
-                        if (recordsThatNeedsReprocessing.isEmpty()) {
-                            break;
-                        }
-                        processor.deduplicate(recordsThatNeedsReprocessing);
-                    }
-
-                    incrementalRecordLinkageMatchListener.commitCurrentDatabaseTransaction();
-                } catch (Exception e) {
-                    // something went wrong, so rollback any changes to the RECORDLINK database table.
-                    incrementalRecordLinkageMatchListener.rollbackCurrentDatabaseTransaction();
-                    throw e;
+                // Process the actual records in the batch.
+                if (!records.isEmpty()) {
+                    processor.deduplicate(records);
                 }
 
                 Writer writer = res.raw().getWriter();
@@ -646,13 +627,48 @@ public class App {
                     return "";
                 } else {
                     try {
-                        String since = req.queryParams("since");
+                        IncrementalRecordLinkageLuceneDatabase luceneDatabase = recordLinkage.luceneDatabase;
+                        String sinceAsString = req.queryParams("since");
+                        long since = 0;
+                        if (sinceAsString != null && !sinceAsString.isEmpty()) {
+                            since = Long.parseLong(sinceAsString);
+                        }
 
                         res.status(200);
                         res.type("application/json");
                         Writer writer = res.raw().getWriter();
 
-                        incrementalRecordLinkageMatchListener.streamRecordLinksSince(since, writer);
+                        writer.append("[");
+                        boolean isFirstEntity = true;
+                        for (Link link : recordLinkage.linkDatabase.getChangesSince(since)) {
+
+                            if (isFirstEntity) {
+                                isFirstEntity = false;
+                            } else {
+                                writer.append(",\n");
+                            }
+
+                            String record1Id = link.getID1();
+                            String record2Id = link.getID2();
+
+                            Record record1 = luceneDatabase.findRecordById(record1Id);
+                            Record record2 = luceneDatabase.findRecordById(record2Id);
+
+                            JsonObject entity = new JsonObject();
+                            entity.addProperty("_id", link.getID1() + "_" + link.getID1());
+                            entity.addProperty("_updated", link.getTimestamp());
+                            entity.addProperty("_deleted", link.getStatus().equals(LinkStatus.RETRACTED));
+                            entity.addProperty("entity1", record1 != null ? record1.getValue(ORIGINAL_ENTITY_ID_PROPERTY_NAME) : null);
+                            entity.addProperty("entity2", record2 != null ? record2.getValue(ORIGINAL_ENTITY_ID_PROPERTY_NAME) : null);
+                            entity.addProperty("dataset1", record1 != null ? record1.getValue(DATASET_ID_PROPERTY_NAME) : null);
+                            entity.addProperty("dataset2", record2 != null ? record2.getValue(DATASET_ID_PROPERTY_NAME) : null);
+                            entity.addProperty("confidence", link.getConfidence());
+
+                            String entityLinkAsString = entity.toString();
+                            writer.append(entityLinkAsString);
+                        }
+
+                        writer.append("]");
 
                         writer.flush();
                         return "";
