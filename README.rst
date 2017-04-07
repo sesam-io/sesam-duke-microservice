@@ -17,3 +17,8 @@ To build a new version of the duke microservice:
     mvn clean install
 
     docker build -t knutj42/sesam-duke-microservice .
+
+
+The file "sesam_node_example_config" in this folder contains a sesam node configuration that works
+together with the default configuration of the duke-microservice.
+ 
