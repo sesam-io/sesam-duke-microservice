@@ -25,7 +25,7 @@ public class IncrementalDataSource extends ColumnarDataSource {
         super();
     }
 
-    String getDatasetId() {
+    public String getDatasetId() {
         return datasetId;
     }
 

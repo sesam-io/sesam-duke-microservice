@@ -15,7 +15,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.io.StringReader;
 import java.io.Writer;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collection;
@@ -29,6 +31,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
+import javax.servlet.MultipartConfigElement;
+import javax.servlet.http.Part;
 import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
@@ -36,6 +40,7 @@ import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
 
 import org.slf4j.Logger;
@@ -55,7 +60,6 @@ import no.priv.garshol.duke.ConfigLoader;
 import no.priv.garshol.duke.Configuration;
 import no.priv.garshol.duke.ConfigurationImpl;
 import no.priv.garshol.duke.DataSource;
-import no.priv.garshol.duke.Database;
 import no.priv.garshol.duke.JDBCLinkDatabase;
 import no.priv.garshol.duke.Link;
 import no.priv.garshol.duke.LinkStatus;
@@ -65,12 +69,19 @@ import no.priv.garshol.duke.PropertyImpl;
 import no.priv.garshol.duke.Record;
 import no.priv.garshol.duke.RecordIterator;
 import no.priv.garshol.duke.datasources.Column;
+import spark.ModelAndView;
 import spark.Request;
 import spark.Response;
+import spark.template.jinjava.JinjavaEngine;
 
 public class App {
+
+    private String configAsString;
+    private File tempFolder;
+    private File tempFolderFile;
+
     private class RecordLinkage {
-        final String recordLinkageName;
+        final private String name;
         final boolean doOneToOneLinking;
         final Map<String, IncrementalRecordLinkageDataSource> dataSetId2dataSource;
         final IncrementalRecordLinkageMatchListener matchListener;
@@ -87,7 +98,7 @@ public class App {
                       JDBCLinkDatabase linkDatabase,
                       IncrementalRecordLinkageLuceneDatabase luceneDatabase
                       ) {
-            this.recordLinkageName = recordLinkageName;
+            this.name = recordLinkageName;
             this.dataSetId2dataSource = dataSetId2dataSource;
             this.matchListener = matchListener;
             this.processor = processor;
@@ -104,14 +115,25 @@ public class App {
                                                              linkMode, recordLinkageName));
             }
         }
+
+        @SuppressWarnings("unused")  // used by the html templates
+        public String getName() {
+            return name;
+        }
+
+        @SuppressWarnings("unused")  // used by the html templates
+        public Map<String, IncrementalRecordLinkageDataSource> getDataSources() {
+            return dataSetId2dataSource;
+        }
+
     }
 
     private Map<String, RecordLinkage> recordLinkages = new HashMap<>();
 
 
     private class Deduplication {
-        private final String deduplicationName;
-        final Map<String, IncrementalDeduplicationDataSource> dataSetId2dataSource;
+        private final String name;
+        private final Map<String, IncrementalDeduplicationDataSource> dataSetId2dataSource;
         final IncrementalDeduplicationMatchListener matchListener;
         final Processor processor;
         final Configuration config;
@@ -127,7 +149,7 @@ public class App {
                       Configuration config,
                       IncrementalDeduplicationLuceneDatabase luceneDatabase
                       ) {
-            this.deduplicationName= deduplicationName;
+            this.name = deduplicationName;
             this.dataSetId2dataSource = dataSetId2dataSource;
             this.matchListener = matchListener;
             this.linkDatabase = linkDatabase;
@@ -136,30 +158,81 @@ public class App {
 
             this.luceneDatabase = luceneDatabase;
         }
+
+        @SuppressWarnings("unused")  // used by the html templates
+        public String getName() {
+            return name;
+        }
+
+        @SuppressWarnings("unused")  // used by the html templates
+        public Map<String, IncrementalDeduplicationDataSource> getDataSources() {
+            return dataSetId2dataSource;
+        }
     }
 
     private Map<String, Deduplication> deduplications = new HashMap<>();
 
     private Logger logger = LoggerFactory.getLogger(App.class);
 
+    @SuppressWarnings("unused")  // used by the html templates
+    public Map<String, Deduplication> getDeduplications() {
+        return deduplications;
+    }
+
+    @SuppressWarnings("unused")  // used by the html templates
+    public Map<String, RecordLinkage> getRecordLinkages() {
+        return recordLinkages;
+    }
 
     public App() throws Exception {
         // Create the Duke processor
 
+        Path atempFolderFile = Files.createTempDirectory(null);
+        tempFolder = atempFolderFile.toFile();
+        tempFolder.deleteOnExit();
+
+
         // TODO: load the config from an environment variable or something.
+        final String CONFIG_STRING_ENVIRONMENT_VARIABLE_NAME = "CONFIG_STRING";
+        String configFromEnvironmentVariable = System.getenv(CONFIG_STRING_ENVIRONMENT_VARIABLE_NAME);
 
-        String configFileName = "classpath:testdukeconfig.xml";
-        Reader configFileReader;
-        if (configFileName.startsWith("classpath:")) {
-            String resource = configFileName.substring("classpath:".length());
-            ClassLoader cloader = Thread.currentThread().getContextClassLoader();
-            InputStream istream = cloader.getResourceAsStream(resource);
-            configFileReader = new InputStreamReader(istream);
+        if (configFromEnvironmentVariable != null && !configFromEnvironmentVariable.isEmpty()) {
+            logger.info("The {} environment variable contains a string, so I'll try to load the config from that.",
+                        CONFIG_STRING_ENVIRONMENT_VARIABLE_NAME);
+
+            Reader configFileReader = new StringReader(configFromEnvironmentVariable);
+            parseConfigFile(configFileReader);
+
         } else {
-            configFileReader = new FileReader(configFileName);
+            logger.info("The {} environment variable was empty, so I'll start up with a demo configuration.",
+                        CONFIG_STRING_ENVIRONMENT_VARIABLE_NAME);
+            String configFileName = "classpath:testdukeconfig.xml";
+            Reader configFileReader;
+            if (configFileName.startsWith("classpath:")) {
+                String resource = configFileName.substring("classpath:".length());
+                ClassLoader cloader = Thread.currentThread().getContextClassLoader();
+                InputStream istream = cloader.getResourceAsStream(resource);
+                configFileReader = new InputStreamReader(istream);
+            } else {
+                configFileReader = new FileReader(configFileName);
+            }
+            parseConfigFile(configFileReader);
         }
+    }
 
+    private void parseConfigFile(Reader configFileReader) throws XPathExpressionException, TransformerException, IOException, SAXException {
         logger.info("Parsing the config-file...");
+
+        // Store the config as a string, so that we can return it in the "/config" endpoint.
+        char buffer[] = new char[10000];
+        StringBuilder stringBuilder = new StringBuilder();
+        int numCharsRead;
+        while ((numCharsRead = configFileReader.read(buffer, 0, buffer.length)) != -1) {
+            stringBuilder.append(buffer, 0, numCharsRead);
+        }
+        String newConfigAsString = stringBuilder.toString();
+
+        configFileReader = new StringReader(newConfigAsString);
 
         // TODO: perhaps get the datafolder from config?
         Path rootDataFolder = Paths.get("").toAbsolutePath().resolve("data");
@@ -178,7 +251,9 @@ public class App {
         }
         Node dukeMicroServiceNode = dukeMicroServiceNodes.item(0);
 
-        for (int dukeChildNodeIndex=0; dukeChildNodeIndex < dukeMicroServiceNode.getChildNodes().getLength(); dukeChildNodeIndex++) {
+        Map<String, Deduplication> newDeduplications = new HashMap<>();
+        Map<String, RecordLinkage> newRecordLinkages = new HashMap<>();
+        for (int dukeChildNodeIndex = 0; dukeChildNodeIndex < dukeMicroServiceNode.getChildNodes().getLength(); dukeChildNodeIndex++) {
             Node dukeChildNode = dukeMicroServiceNode.getChildNodes().item(dukeChildNodeIndex);
             if (dukeChildNode instanceof Element) {
                 Element element = (Element)dukeChildNode;
@@ -302,7 +377,7 @@ public class App {
 
                         }
 
-                        deduplications.put(deduplicationName, new Deduplication(deduplicationName,
+                        newDeduplications.put(deduplicationName, new Deduplication(deduplicationName,
                                                                                 dataSetId2dataSource,
                                                                                 incrementalDeduplicationMatchListener,
                                                                                 linkDatabase,
@@ -443,7 +518,7 @@ public class App {
                         addDataSourcesForGroup.accept(1);
                         addDataSourcesForGroup.accept(2);
 
-                        recordLinkages.put(recordLinkageName, new RecordLinkage(recordLinkageName,
+                        newRecordLinkages.put(recordLinkageName, new RecordLinkage(recordLinkageName,
                                                                                 linkMode,
                                                                                 dataSetId2dataSource,
                                                                                 incrementalRecordLinkageMatchListener,
@@ -458,9 +533,13 @@ public class App {
                         throw new RuntimeException(String.format("Unknown element '%s' found in the configuration file!", tagName));
                 }
             }
-
         }
-        logger.info("Done parsing the config-file.");
+
+        // The parsing succeeded, so make this config the new active config
+        this.configAsString = newConfigAsString;
+        this.deduplications = newDeduplications;
+        this.recordLinkages = newRecordLinkages;
+        logger.info("Done parsing the config-file. The config can be read from the '/config' endpoint with a GET-request, and updated with a PUT-request.");
     }
 
     private ConfigurationImpl parseDukeConfig(String parentElementLabel, Element element) throws IOException, TransformerException, SAXException {
@@ -503,6 +582,67 @@ public class App {
         App app = new App();
         Gson gson = new Gson();
 
+        get("/", (request, response) -> {
+            Map<String, Object> model = new HashMap<>();
+            model.put("hello", "Velocity World");
+            model.put("app", app);
+            return new JinjavaEngine().render(
+                    new ModelAndView(model, "templates/index.html")
+            );
+        });
+
+        get("/config", (Request req, Response res) -> {
+            res.status(200);
+            res.type("application/xml");
+            Writer writer = res.raw().getWriter();
+            writer.append(app.configAsString);
+            writer.flush();
+            return "";
+        });
+
+        post("/config", (Request req, Response res) -> {
+
+            MultipartConfigElement multipartConfigElement = new MultipartConfigElement("/tmp");
+            //req.raw().setAttribute("org.eclipse.multipartConfig", multipartConfigElement);
+
+            req.raw().setAttribute("org.eclipse.jetty.multipartConfig", multipartConfigElement);
+
+            Part uploadedFile = req.raw().getPart("configfile");
+            final InputStream in = uploadedFile.getInputStream();
+            app.parseConfigFile(new InputStreamReader(in));
+
+            res.redirect("/");
+            res.type("text/plain");
+            return "ok";
+        });
+
+
+        get("/recordlinkage/:recordLinkage/:datasetId", (Request req, Response res) -> {
+                String recordLinkageName = req.params("recordLinkage");
+                String datasetId = req.params("datasetId");
+
+                if (recordLinkageName.isEmpty()) {
+                    halt(404, "The recordLinkage cannot be an empty string!");
+                }
+
+                if (datasetId.isEmpty()) {
+                    halt(404, "The datasetId cannot be an empty string!");
+                }
+
+                RecordLinkage recordLinkage = app.recordLinkages.get(recordLinkageName);
+                if (recordLinkage == null) {
+                    halt(404, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
+                                            recordLinkageName));
+                }
+
+                IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
+                if (dataSource == null) {
+                    halt(404, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
+                }
+            halt(405, "This endpoint only supports POST requests.");
+            return "";
+        });
+
         /*
          * This endpoint is used to do record linkage. The results can be read from the
          * GET /recordlinkage/:recordLinkage endpoint.
@@ -512,25 +652,26 @@ public class App {
             String datasetId = req.params("datasetId");
 
             if (recordLinkageName.isEmpty()) {
-                halt(400, "The recordLinkage cannot be an empty string!");
+                halt(404, "The recordLinkage cannot be an empty string!");
             }
 
             if (datasetId.isEmpty()) {
-                halt(400, "The datasetId cannot be an empty string!");
+                halt(404, "The datasetId cannot be an empty string!");
             }
 
             RecordLinkage recordLinkage = app.recordLinkages.get(recordLinkageName);
             if (recordLinkage == null) {
-                halt(400, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
+                halt(404, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
                                         recordLinkageName));
             }
 
-            recordLinkage.lock.lock();
-
             IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
             if (dataSource == null) {
-                halt(400, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
+                halt(404, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
             }
+
+
+            recordLinkage.lock.lock();
 
             res.type("application/json");
 
@@ -687,6 +828,33 @@ public class App {
         });
 
 
+
+        get("/deduplication/:deduplication/:datasetId", (Request req, Response res) -> {
+            String deduplicationName = req.params("deduplication");
+            String datasetId = req.params("datasetId");
+
+            if (deduplicationName.isEmpty()) {
+                halt(404, "The deduplicationName cannot be an empty string!");
+            }
+
+            if (datasetId.isEmpty()) {
+                halt(404, "The datasetId cannot be an empty string!");
+            }
+
+            Deduplication deduplication = app.deduplications.get(deduplicationName);
+            if (deduplication == null) {
+                halt(404, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
+                                        deduplicationName));
+            }
+
+            IncrementalDeduplicationDataSource dataSource = deduplication.getDataSources().get(datasetId);
+            if (dataSource == null) {
+                halt(404, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
+            }
+
+             halt(405, "This endpoint only supports POST requests.");
+             return "";
+        });
         
         /*
          * This endpoint is used to do deduplication. The results can be read from the
@@ -697,26 +865,26 @@ public class App {
             String datasetId = req.params("datasetId");
 
             if (deduplicationName.isEmpty()) {
-                halt(400, "The deduplicationName cannot be an empty string!");
+                halt(404, "The deduplicationName cannot be an empty string!");
             }
 
             if (datasetId.isEmpty()) {
-                halt(400, "The datasetId cannot be an empty string!");
+                halt(404, "The datasetId cannot be an empty string!");
             }
 
             Deduplication deduplication = app.deduplications.get(deduplicationName);
             if (deduplication == null) {
-                halt(400, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
+                halt(404, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
                                         deduplicationName));
+            }
+
+            IncrementalDeduplicationDataSource dataSource = deduplication.getDataSources().get(datasetId);
+            if (dataSource == null) {
+                halt(404, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
             }
 
             deduplication.lock.lock();
             try {
-
-                IncrementalDeduplicationDataSource dataSource = deduplication.dataSetId2dataSource.get(datasetId);
-                if (dataSource == null) {
-                    halt(400, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
-                }
 
                 res.type("application/json");
 

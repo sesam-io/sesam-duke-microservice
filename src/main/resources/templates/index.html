@@ -1,0 +1,59 @@
+<html>
+
+<head>
+    <title>Duke microservice</title>
+</head>
+
+<body>
+
+<h1>Duke microservice</h1>
+<p>
+    You have arrived at the home page of the Duke microservice.
+</p>
+
+<h2>Deduplications</h2>
+<div>
+    <ul>
+        {% for deduplication in app.deduplications %}
+        <li>
+            <h3>{{deduplication.name}}</h3>
+            <div>Post entities to these endpoints:</div>
+            <ul>
+                {% for datasetSource in deduplication.dataSources %}
+                <li>
+                    <a href="/deduplication/{{deduplication.name}}/{{datasetSource.datasetId}}">/deduplication/{{deduplication.name}}/{{datasetSource.datasetId}}</a>
+                </li>
+                {% endfor %}
+            </ul>
+
+            <div>Results available here:</div>
+            <div>
+                <a href="/deduplication/{{deduplication.name}}">/deduplication/{{deduplication.name}}</a>
+            </div>
+
+        </li>
+        {% endfor %}
+
+    </ul>
+</div>
+
+<h2>Configuration</h2>
+<div>
+    <a href="/config" target="_blank">Click here to download the current configuration</a>
+</div>
+<div>
+    <form action="/config"
+          enctype="multipart/form-data" method="post">
+        <p>
+            To upload a new config, please specify a file and hit the 'Upload config' button:<br>
+            <input type="file" name="configfile" size="40">
+        </p>
+        <div>
+            <input type="submit" value="Upload config">
+        </div>
+    </form>
+</div>
+
+</body>
+
+</html>

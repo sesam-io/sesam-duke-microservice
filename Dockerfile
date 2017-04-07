@@ -1,7 +1,7 @@
 FROM java:8-jre-alpine
 
-ADD target/java-datasource-template-1.0-SNAPSHOT.jar /srv/
+ADD target/duke-microservice-1.0-SNAPSHOT.jar /srv/
 
-ENTRYPOINT ["java", "-jar", "/srv/java-datasource-template-1.0-SNAPSHOT.jar"]
+ENTRYPOINT ["java", "-jar", "/srv/duke-microservice-1.0-SNAPSHOT.jar"]
 
 
