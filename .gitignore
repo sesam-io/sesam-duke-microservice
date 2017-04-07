@@ -10,3 +10,7 @@ target/
 .classpath
 .project
 .settings/
+
+.idea
+data
+duke-microservice.iml
