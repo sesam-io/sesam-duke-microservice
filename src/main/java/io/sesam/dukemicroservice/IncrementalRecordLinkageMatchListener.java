@@ -1,6 +1,7 @@
 package io.sesam.dukemicroservice;
 
 import static io.sesam.dukemicroservice.IncrementalRecordLinkageLuceneDatabase.DATASET_ID_PROPERTY_NAME;
+import static io.sesam.dukemicroservice.IncrementalRecordLinkageLuceneDatabase.GROUP_NO_PROPERTY_NAME;
 import static io.sesam.dukemicroservice.IncrementalRecordLinkageLuceneDatabase.ORIGINAL_ENTITY_ID_PROPERTY_NAME;
 
 import java.io.IOException;
@@ -31,6 +32,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
     private final String recordLinkageName;
     private final Logger logger;
     private final Connection h2connection;
+
 
     public IncrementalRecordLinkageMatchListener(App app,
                                                  String recordLinkageName,
@@ -70,15 +72,41 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
                     stmt.executeUpdate(sql);
                 }
 
-                logger.info("Creating the 'RECORDLINKS_THAT_NEEDS_REMATCH' database table.");
+                logger.info("Creating the 'RECORDS_THAT_NEEDS_REMATCH' database table.");
                 try (Statement stmt = h2connection.createStatement();) {
-                    String sql = "CREATE TABLE RECORDLINKS_THAT_NEEDS_REMATCH(" +
+                    String sql = "CREATE TABLE RECORDS_THAT_NEEDS_REMATCH(" +
                             "recordId NVARCHAR not NULL, " +
                             "PRIMARY KEY (recordId))";
                     stmt.executeUpdate(sql);
                 }
             }
         }
+    }
+
+    public void updatedDatabaseAfterBatch() {
+        // Loop through all the new primary group matches
+            // If we are running in one-to-one mode:
+            //   Look up the existing (undeleted) rows (should be at most one row) for the secondary record with a different primary record:
+            //   If it exists:
+            //     if the confidence in this row is larger than this match:
+            //       skip this match
+            //     else:
+            //       mark the row as deleted
+            //
+            // Look up the existing (undeleted) row for the primary record
+            // If it exists:
+            //   If the secondary record or the confidence has changed:
+            //     update the row
+            // else:
+            //   merge in a new row (so that we handle deleted rows with the same query as when we don't have a row)
+
+        // Loop through all the new secondary group matches
+            // Mark the primary record for reprocessing
+            //
+            // Look up the existing (undeleted) rows for the secondary record
+            // If it exists:
+            //   If the primary record in the row or the confidence in the row is different from the ones in this match:
+            //     mark the primary record in the row for reprocessing
     }
 
     private void _matches(Record r1, Record r2, double confidence) {
@@ -157,9 +185,9 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
                     // mark it for rematching.
                     if (!existingPrimaryRecord2Id.equals(recordFromGroup2Id)) {
                         try (PreparedStatement markAsRematchStatement = h2connection.prepareStatement(
-                                "MERGE INTO RECORDLINKS_THAT_NEEDS_REMATCH KEY(recordId) VALUES(?)"
+                                "MERGE INTO RECORDS_THAT_NEEDS_REMATCH KEY(recordId) VALUES(?)"
                         )) {
-                            markAsRematchStatement.setNString(1, existingSecondaryRecord1Id);
+                            markAsRematchStatement.setNString(1, existingPrimaryRecord2Id);
                             markAsRematchStatement.executeUpdate();
                         }
                     }
@@ -221,7 +249,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
                     }
 
                     try (PreparedStatement markAsRematchStatement = h2connection.prepareStatement(
-                            "MERGE INTO RECORDLINKS_THAT_NEEDS_REMATCH KEY(recordId) VALUES(?)"
+                            "MERGE INTO RECORDS_THAT_NEEDS_REMATCH KEY(recordId) VALUES(?)"
                     )) {
                         markAsRematchStatement.setNString(1, existingSecondaryRecord1Id);
                         markAsRematchStatement.executeUpdate();
@@ -233,7 +261,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
         }
     }
 
-    private boolean confidenceIsMeasurablyLarger(double confidence, double existingPrimaryConfidence) {
+    static private boolean confidenceIsMeasurablyLarger(double confidence, double existingPrimaryConfidence) {
         if (confidence > existingPrimaryConfidence) {
             double diff = Math.abs(confidence - existingPrimaryConfidence);
             if (diff > 0.001) {
@@ -250,7 +278,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
 
     @Override
     public void batchDone() {
-        logger.debug("batchDone()");
+        logger.info("batchDone()");
     }
 
     @Override
@@ -268,6 +296,73 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
     @Override
     public void noMatchFor(Record record) {
         logger.debug("noMatchFor(record={})", record);
+        String recordId = record.getValue("ID");
+        try {
+
+            if (record.getValue(GROUP_NO_PROPERTY_NAME).equals("1")) {
+                // this record is from the primary group, so mark any non-deleted rows as deleted
+
+                // Check if there is an undeleted row for the primary record
+                try (PreparedStatement selectStatement = h2connection.prepareStatement(
+                        "SELECT * FROM RECORDLINKS WHERE record1id=? AND deleted=FALSE")) {
+                    selectStatement.setNString(1, recordId);
+                    try (ResultSet resultSet = selectStatement.executeQuery()) {
+                        if (resultSet.next()) {
+                            String record2id = resultSet.getString("record2id");
+                            // The primary row exists. We must mark record2 for rematching.
+                            try (PreparedStatement markAsRematchStatement = h2connection.prepareStatement(
+                                    "MERGE INTO RECORDS_THAT_NEEDS_REMATCH KEY(recordId) VALUES(?)"
+                            )) {
+                                markAsRematchStatement.setNString(1, record2id);
+                                markAsRematchStatement.executeUpdate();
+                            }
+
+                            // We must mark the row as deleted now
+                            try (PreparedStatement updateStatement = h2connection.prepareStatement(
+                                    "UPDATE RECORDLINKS SET "
+                                            + "updated=(select next value for RECORDLINKS_UPDATED), "
+                                            + "deleted=TRUE "
+                                            + "WHERE record1id=? AND deleted=FALSE" // 1
+                            )) {
+                                updateStatement.setNString(1, recordId);
+                                updateStatement.executeUpdate();
+                            }
+                        }
+                    }
+                }
+            } else {
+                // this record is from the secondary group
+                try (PreparedStatement selectStatement = h2connection.prepareStatement(
+                        "SELECT * FROM RECORDLINKS WHERE record2id=? AND deleted=FALSE")) {
+                    selectStatement.setNString(1, recordId);
+                    try (ResultSet resultSet = selectStatement.executeQuery()) {
+                        if (resultSet.next()) {
+                            String record1id = resultSet.getString("record1id");
+                            // The secondary row exists. We must mark record1 for rematching.
+                            try (PreparedStatement markAsRematchStatement = h2connection.prepareStatement(
+                                    "MERGE INTO RECORDS_THAT_NEEDS_REMATCH KEY(recordId) VALUES(?)"
+                            )) {
+                                markAsRematchStatement.setNString(1, record1id);
+                                markAsRematchStatement.executeUpdate();
+                            }
+
+                            // We must mark the row as deleted now
+                            try (PreparedStatement updateStatement = h2connection.prepareStatement(
+                                    "UPDATE RECORDLINKS SET "
+                                            + "updated=(select next value for RECORDLINKS_UPDATED), "
+                                            + "deleted=TRUE "
+                                            + "WHERE record2id=? AND deleted=FALSE" // 1
+                            )) {
+                                updateStatement.setNString(1, recordId);
+                                updateStatement.executeUpdate();
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
@@ -290,7 +385,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
 
     public List<String> getRecordIdsThatNeedReprocessing() throws SQLException {
         List<String> recordIdsThatNeedReprocessing = new LinkedList<>();
-        try (PreparedStatement selectStatement = h2connection.prepareStatement("SELECT * FROM RECORDLINKS_THAT_NEEDS_REMATCH")) {
+        try (PreparedStatement selectStatement = h2connection.prepareStatement("SELECT * FROM RECORDS_THAT_NEEDS_REMATCH")) {
             try (ResultSet resultSet = selectStatement.executeQuery()) {
                 while (resultSet.next()) {
                     recordIdsThatNeedReprocessing.add(resultSet.getString("recordId"));
@@ -301,7 +396,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
     }
 
     public void clearRecordIdsThatNeedReprocessing() throws SQLException {
-        try (PreparedStatement deleteStatement = h2connection.prepareStatement("DELETE FROM RECORDLINKS_THAT_NEEDS_REMATCH")) {
+        try (PreparedStatement deleteStatement = h2connection.prepareStatement("DELETE FROM RECORDS_THAT_NEEDS_REMATCH")) {
             deleteStatement.executeUpdate();
         }
     }
@@ -354,7 +449,7 @@ public class IncrementalRecordLinkageMatchListener implements MatchListener {
         String recordId = record.getValue("ID");
 
         try (PreparedStatement deleteStatement = h2connection.prepareStatement(
-                "DELETE FROM RECORDLINKS_THAT_NEEDS_REMATCH WHERE recordId=?")) {
+                "DELETE FROM RECORDS_THAT_NEEDS_REMATCH WHERE recordId=?")) {
             deleteStatement.setString(1, recordId);
             deleteStatement.executeUpdate();
         }
