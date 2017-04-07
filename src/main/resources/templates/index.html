@@ -37,6 +37,33 @@
     </ul>
 </div>
 
+<h2>Record linkages</h2>
+<div>
+    <ul>
+        {% for recordLinkage in app.recordLinkages %}
+        <li>
+            <h3>{{recordLinkage.name}}</h3>
+            <div>Post entities to these endpoints:</div>
+            recordLinkage.dataSources : {{recordLinkage.getDataSources()}}
+            <ul>
+                {% for datasetSource in recordLinkage.dataSources %}
+                <li>
+                    <a href="/recordlinkage/{{recordLinkage.name}}/{{datasetSource.datasetId}}">/recordlinkage/{{deduplication.name}}/{{datasetSource.datasetId}}</a>
+                </li>
+                {% endfor %}
+            </ul>
+
+            <div>Results available here:</div>
+            <div>
+                <a href="/recordlinkage/{{recordLinkage.name}}">/recordlinkage/{{recordLinkage.name}}</a>
+            </div>
+
+        </li>
+        {% endfor %}
+
+    </ul>
+</div>
+
 <h2>Configuration</h2>
 <div>
     <a href="/config" target="_blank">Click here to download the current configuration</a>
