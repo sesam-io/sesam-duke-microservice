@@ -796,7 +796,7 @@ public class App {
                             Record record2 = luceneDatabase.findRecordById(record2Id);
 
                             JsonObject entity = new JsonObject();
-                            entity.addProperty("_id", (link.getID1() + "_" + link.getID1()).replace(':', '_'));
+                            entity.addProperty("_id", (link.getID1() + "_" + link.getID2()).replace(':', '_'));
                             entity.addProperty("_updated", link.getTimestamp());
                             entity.addProperty("_deleted", link.getStatus().equals(LinkStatus.RETRACTED));
                             entity.addProperty("entity1", record1 != null ? record1.getValue(ORIGINAL_ENTITY_ID_PROPERTY_NAME) : null);
@@ -1007,7 +1007,7 @@ public class App {
                             Record record2 = luceneDatabase.findRecordById(record2Id);
 
                             JsonObject entity = new JsonObject();
-                            entity.addProperty("_id", (link.getID1() + "_" + link.getID1()).replace(':', '_'));
+                            entity.addProperty("_id", (link.getID1() + "_" + link.getID2()).replace(':', '_'));
                             entity.addProperty("_updated", link.getTimestamp());
                             entity.addProperty("_deleted", link.getStatus().equals(LinkStatus.RETRACTED));
                             entity.addProperty("entity1", record1 != null ? record1.getValue(ORIGINAL_ENTITY_ID_PROPERTY_NAME) : null);
