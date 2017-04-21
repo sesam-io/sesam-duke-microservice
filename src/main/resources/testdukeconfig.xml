@@ -1,4 +1,14 @@
+<!--
+    The 'DukeMicroService' element the root config-file element.
+
+    The "dataFolder" attribute is optional and is used to specify the folder where the duke microservice
+    should store its various database-files.
+-->
 <DukeMicroService dataFolder="/data">
+
+    <!--
+        The 'Deduplication' element is used when you want to find duplicates in one or more datasets.
+    -->
     <Deduplication name="countries-dbpedia-mondial">
         <!-- This is the configuration for the Duke component itself. It is very similar to the config-file you
         would use if you were using Duke as a stand-alone commandline tool. The difference is that the only
@@ -62,6 +72,10 @@
     </Deduplication>
 
 
+    <!--
+        The 'RecordLinkage' element is used when you want to match element in one dataset against
+        elements in another dataset.
+    -->
     <RecordLinkage name="countries-dbpedia-mondial"
                    link-mode="one-to-one"
     >
