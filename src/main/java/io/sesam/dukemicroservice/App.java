@@ -234,14 +234,12 @@ public class App {
 
         configFileReader = new StringReader(newConfigAsString);
 
-        // TODO: perhaps get the datafolder from config?
-        Path rootDataFolder = Paths.get("").toAbsolutePath().resolve("data");
-
         XPath xPath = XPathFactory.newInstance().newXPath();
 
         // TODO: Do config-file validation with a schema or something.
 
         InputSource xml = new InputSource(configFileReader);
+
         NodeList dukeMicroServiceNodes = (NodeList) xPath.evaluate("//DukeMicroService", xml, XPathConstants.NODESET);
         if (dukeMicroServiceNodes.getLength() == 0) {
             throw new RuntimeException("The configfile didn't contain a 'DukeMicroService' entity!");
@@ -250,6 +248,16 @@ public class App {
             throw new RuntimeException("The configfile contain more than one 'DukeMicroService' entity!");
         }
         Node dukeMicroServiceNode = dukeMicroServiceNodes.item(0);
+
+        Path rootDataFolder = Paths.get("").toAbsolutePath().resolve("data");
+
+        Node dataFolderAttribute = dukeMicroServiceNode.getAttributes().getNamedItem("dataFolder");
+        if (dataFolderAttribute != null) {
+            String dataFolderFromConfig = dataFolderAttribute.getTextContent();
+            if ((dataFolderFromConfig != null) && !dataFolderFromConfig.isEmpty()) {
+                rootDataFolder = Paths.get(dataFolderFromConfig);
+            }
+        }
 
         Map<String, Deduplication> newDeduplications = new HashMap<>();
         Map<String, RecordLinkage> newRecordLinkages = new HashMap<>();
