@@ -47,6 +47,8 @@ import no.priv.garshol.duke.databases.DocumentRecord;
 import no.priv.garshol.duke.databases.GeoProperty;
 import no.priv.garshol.duke.utils.Utils;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /*
  * We need our own version of the LuceneDatabase class. We would have preferred to just derive from
  * the LuceneDatabase class, but that is not possible, since too many of the bits we need are
@@ -75,15 +77,20 @@ public abstract class IncrementalLuceneDatabase implements Database {
     // helper for geostuff
     private GeoProperty geoprop;
 
+    private final Logger logger;
+
     public IncrementalLuceneDatabase() {
         this.analyzer = new StandardAnalyzer(Version.LUCENE_CURRENT);
         this.maintracker = new EstimateResultTracker();
-        this.max_search_hits = 1000000;
-        this.fuzzy_search = true; // on by default
+        this.max_search_hits = 10;
+        this.fuzzy_search = false; // on by default
+        this.min_relevance = 0.9f;
+        this.logger = LoggerFactory.getLogger("IncrementalLuceneDatabase");
     }
 
     public void setConfiguration(Configuration config) {
         this.config = config;
+        logger.info("Setting config: {}", config.getProperties());
     }
 
     public void setOverwrite(boolean overwrite) {
