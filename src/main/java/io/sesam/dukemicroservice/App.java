@@ -551,7 +551,7 @@ public class App {
         LinkDatabase linkDatabase;
         switch (linkDatabaseType) {
             case "in-memory":
-                linkDatabase = new InMemoryLinkDatabase();
+                linkDatabase = new SinceAwareInMemoryLinkDatabase();
                 break;
                 
             case "h2": 
@@ -831,12 +831,7 @@ public class App {
                         writer.append("[");
                         boolean isFirstEntity = true;
 
-                        Collection<Link> links;
-                        if (since != 0) {
-                            links = recordLinkage.linkDatabase.getChangesSince(since);
-                        } else {
-                            links = recordLinkage.linkDatabase.getAllLinks();
-                        }
+                        Collection<Link> links = recordLinkage.linkDatabase.getChangesSince(since);
 
                         for (Link link : links) {
 
