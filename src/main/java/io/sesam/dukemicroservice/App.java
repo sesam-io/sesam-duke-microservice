@@ -60,8 +60,10 @@ import no.priv.garshol.duke.ConfigLoader;
 import no.priv.garshol.duke.Configuration;
 import no.priv.garshol.duke.ConfigurationImpl;
 import no.priv.garshol.duke.DataSource;
+import no.priv.garshol.duke.InMemoryLinkDatabase;
 import no.priv.garshol.duke.JDBCLinkDatabase;
 import no.priv.garshol.duke.Link;
+import no.priv.garshol.duke.LinkDatabase;
 import no.priv.garshol.duke.LinkStatus;
 import no.priv.garshol.duke.Processor;
 import no.priv.garshol.duke.Property;
@@ -87,7 +89,7 @@ public class App {
         final IncrementalRecordLinkageMatchListener matchListener;
         final Processor processor;
         final Configuration config;
-        private final JDBCLinkDatabase linkDatabase;
+        private final LinkDatabase linkDatabase;
         private final IncrementalRecordLinkageLuceneDatabase luceneDatabase;
         final Lock lock = new ReentrantLock();
 
@@ -95,7 +97,7 @@ public class App {
                       String linkMode, Map<String, IncrementalRecordLinkageDataSource> dataSetId2dataSource,
                       IncrementalRecordLinkageMatchListener matchListener, Processor processor,
                       Configuration config,
-                      JDBCLinkDatabase linkDatabase,
+                      LinkDatabase linkDatabase,
                       IncrementalRecordLinkageLuceneDatabase luceneDatabase
                       ) {
             this.name = recordLinkageName;
@@ -139,12 +141,12 @@ public class App {
         final Configuration config;
         final IncrementalDeduplicationLuceneDatabase luceneDatabase;
         final Lock lock = new ReentrantLock();
-        final JDBCLinkDatabase linkDatabase;
+        final LinkDatabase linkDatabase;
 
         Deduplication(String deduplicationName,
                       Map<String, IncrementalDeduplicationDataSource> dataSetId2dataSource,
                       IncrementalDeduplicationMatchListener matchListener,
-                      JDBCLinkDatabase linkDatabase,
+                      LinkDatabase linkDatabase,
                       Processor processor,
                       Configuration config,
                       IncrementalDeduplicationLuceneDatabase luceneDatabase
@@ -320,24 +322,8 @@ public class App {
                         config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
 
-                        Path h2DatabasePath = deduplicationDataFolder.resolve("linkdatabase");
-                        File h2DatabaseFolder = h2DatabasePath.toFile().getParentFile();
-                        wasCreated = h2DatabaseFolder.mkdirs();
-                        if (wasCreated) {
-                            logger.info("    Created the folder '{}'.", h2DatabaseFolder.getAbsolutePath());
-                        }
-                        if (!h2DatabaseFolder.exists()) {
-                            throw new RuntimeException(String.format("Failed to create the folder '%s'!", h2DatabasePath.toString()));
-                        }
-
-                        logger.info("    Using this folder for the h2 deduplication database: '{}'.", h2DatabasePath.toString());
-
-                        JDBCLinkDatabase linkDatabase = new JDBCLinkDatabase("org.h2.Driver",
-                                                                         "jdbc:h2://" + h2DatabasePath.toString(),
-                                                                         "h2",
-                                                                         null
-                                                                         );
-                        linkDatabase.init();
+                        LinkDatabase linkDatabase = createLinkDatabase(element, deduplicationDataFolder, false);
+                        
                         IncrementalDeduplicationMatchListener incrementalDeduplicationMatchListener  = new IncrementalDeduplicationMatchListener(
                                 deduplicationName,
                                 config,
@@ -453,25 +439,9 @@ public class App {
                         luceneDatabase.setPath(luceneFolderPath.toString());
                         config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
+                        
+                        LinkDatabase linkDatabase = createLinkDatabase(element, recordLinkDataFolder, true);
 
-                        Path h2DatabasePath = recordLinkDataFolder.resolve("recordlinkdatabase");
-                        File h2DatabaseFolder = h2DatabasePath.toFile().getParentFile();
-                        wasCreated = h2DatabaseFolder.mkdirs();
-                        if (wasCreated) {
-                            logger.info("    Created the folder '{}'.", h2DatabaseFolder.getAbsolutePath());
-                        }
-                        if (!h2DatabaseFolder.exists()) {
-                            throw new RuntimeException(String.format("Failed to create the folder '%s'!", h2DatabasePath.toString()));
-                        }
-
-                        logger.info("    Using this folder for the h2 record-link database: '{}'.", h2DatabasePath.toString());
-
-                        JDBCLinkDatabase linkDatabase = new JDBCLinkDatabase("org.h2.Driver",
-                                                                             "jdbc:h2://" + h2DatabasePath.toString(),
-                                                                             "h2",
-                                                                             null
-                        );
-                        linkDatabase.init();
                         IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = new IncrementalRecordLinkageMatchListener(
                                 recordLinkageName,
                                 config,
@@ -548,6 +518,53 @@ public class App {
         this.deduplications = newDeduplications;
         this.recordLinkages = newRecordLinkages;
         logger.info("Done parsing the config-file. The config can be read from the '/config' endpoint with a GET-request, and updated with a PUT-request.");
+    }
+
+    private LinkDatabase createLinkDatabase(Element element, Path dataFolder, boolean isRecordLinkage) {
+        String linkDatabaseType = element.getAttribute("link-database-type");
+        if (linkDatabaseType == null || linkDatabaseType.isEmpty()) {
+            linkDatabaseType = "h2";
+        }
+        LinkDatabase linkDatabase;
+        switch (linkDatabaseType) {
+            case "in-memory":
+                linkDatabase = new InMemoryLinkDatabase();
+                break;
+                
+            case "h2": 
+                {
+                    Path h2DatabasePath;
+                    if (isRecordLinkage) {
+                        h2DatabasePath = dataFolder.resolve("recordlinkdatabase");
+                    } else {
+                        h2DatabasePath = dataFolder.resolve("linkdatabase");
+                    }
+                    
+                    File h2DatabaseFolder = h2DatabasePath.toFile().getParentFile();
+                    boolean wasCreated = h2DatabaseFolder.mkdirs();
+                    if (wasCreated) {
+                        logger.info("    Created the folder '{}'.", h2DatabaseFolder.getAbsolutePath());
+                    }
+                    if (!h2DatabaseFolder.exists()) {
+                        throw new RuntimeException(String.format("Failed to create the folder '%s'!", h2DatabasePath.toString()));
+                    }
+        
+                    logger.info("    Using this folder for the h2 linkdatabase: '{}'.", h2DatabasePath.toString());
+
+                    JDBCLinkDatabase jdbcLinkDatabase = new JDBCLinkDatabase("org.h2.Driver",
+                                                                             "jdbc:h2://" + h2DatabasePath.toString(),
+                                                                             "h2",
+                                                                             null
+                    );
+                    jdbcLinkDatabase.init();
+                    linkDatabase = jdbcLinkDatabase;
+                }
+                break;
+                
+            default:
+                throw new RuntimeException(String.format("Got an unknown 'link-database-type' value: '%s'", linkDatabaseType));
+        }
+        return linkDatabase;
     }
 
     private ConfigurationImpl parseDukeConfig(String parentElementLabel, Element element) throws IOException, TransformerException, SAXException {
@@ -713,7 +730,7 @@ public class App {
             IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
 
             IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
-            JDBCLinkDatabase linkDatabase = recordLinkage.linkDatabase;
+            LinkDatabase linkDatabase = recordLinkage.linkDatabase;
             try {
                 // When we get a record with "_deleted"=True, we must do the following:
                 // 1. Delete the record from the lucene index
@@ -789,7 +806,15 @@ public class App {
 
                         writer.append("[");
                         boolean isFirstEntity = true;
-                        for (Link link : recordLinkage.linkDatabase.getChangesSince(since)) {
+
+                        Collection<Link> links;
+                        if (since != 0) {
+                            links = recordLinkage.linkDatabase.getChangesSince(since);
+                        } else {
+                            links = recordLinkage.linkDatabase.getAllLinks();
+                        }
+
+                        for (Link link : links) {
 
                             if (isFirstEntity) {
                                 isFirstEntity = false;
@@ -926,7 +951,7 @@ public class App {
                 IncrementalDeduplicationLuceneDatabase database = deduplication.luceneDatabase;
 
                 IncrementalDeduplicationMatchListener incrementalDeduplicationMatchListener = deduplication.matchListener;
-                JDBCLinkDatabase linkDatabase = deduplication.linkDatabase;
+                LinkDatabase linkDatabase = deduplication.linkDatabase;
 
                 try {
                     for (Record record : deletedRecords) {
