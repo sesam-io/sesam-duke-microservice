@@ -225,6 +225,23 @@ public class App {
     private void parseConfigFile(Reader configFileReader) throws XPathExpressionException, TransformerException, IOException, SAXException {
         logger.info("Parsing the config-file...");
 
+        // Load thread config
+        int numberOfThreads = 1;
+        String numberOfThreadsConfig = System.getenv("THREADS");
+        if (numberOfThreadsConfig != null && numberOfThreadsConfig.matches("\\d+")) {
+            numberOfThreads = Integer.parseInt(numberOfThreadsConfig);
+        }
+        logger.info("Running with " + numberOfThreads + " threads");
+
+        // Load thread config
+        boolean profilePerformance = false;
+        String profilePerformanceConfig = System.getenv("PROFILE");
+        if (profilePerformanceConfig != null && profilePerformanceConfig.equals("1")) {
+            profilePerformance = true;
+            logger.warn("Running with profiling enabled");
+        }
+
+
         // Store the config as a string, so that we can return it in the "/config" endpoint.
         char buffer[] = new char[10000];
         StringBuilder stringBuilder = new StringBuilder();
@@ -321,6 +338,8 @@ public class App {
                         luceneDatabase.setPath(luceneFolderPath.toString());
                         config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
+                        processor.setThreads(numberOfThreads);
+                        processor.setPerformanceProfiling(profilePerformance);
 
                         LinkDatabase linkDatabase = createLinkDatabase(element, deduplicationDataFolder, false);
                         
@@ -439,7 +458,9 @@ public class App {
                         luceneDatabase.setPath(luceneFolderPath.toString());
                         config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
-                        
+                        processor.setThreads(numberOfThreads);
+                        processor.setPerformanceProfiling(profilePerformance);
+
                         LinkDatabase linkDatabase = createLinkDatabase(element, recordLinkDataFolder, true);
 
                         IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = new IncrementalRecordLinkageMatchListener(
@@ -504,6 +525,8 @@ public class App {
                                                                                 config,
                                                                                 linkDatabase,
                                                                                 luceneDatabase));
+                        logger.info("This config database: {}", processor.getDatabase().toString());
+
                     }
                     break;
 
@@ -728,6 +751,7 @@ public class App {
 
             Processor processor = recordLinkage.processor;
             IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
+
 
             IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
             LinkDatabase linkDatabase = recordLinkage.linkDatabase;
