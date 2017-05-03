@@ -9,7 +9,9 @@
     <!--
         The 'Deduplication' element is used when you want to find duplicates in one or more datasets.
     -->
-    <Deduplication name="countries-dbpedia-mondial">
+    <Deduplication name="countries-dbpedia-mondial"
+                   duke-processor-threads="1"
+    >
         <!-- This is the configuration for the Duke component itself. It is very similar to the config-file you
         would use if you were using Duke as a stand-alone commandline tool. The difference is that the only
         legal datasource is the "io.sesam.dukemicroservice.IncrementalDeduplicationDataSource". -->
@@ -78,6 +80,7 @@
     -->
     <RecordLinkage name="countries-dbpedia-mondial"
                    link-mode="one-to-one"
+                   duke-processor-threads="4"
     >
         <!-- This is the configuration for the Duke component itself. It is very similar to the config-file you
         would use if you were using Duke as a stand-alone commandline tool. The difference is that the only

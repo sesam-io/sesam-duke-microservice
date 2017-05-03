@@ -62,6 +62,7 @@ import no.priv.garshol.duke.ConfigurationImpl;
 import no.priv.garshol.duke.DataSource;
 import no.priv.garshol.duke.JDBCLinkDatabase;
 import no.priv.garshol.duke.Link;
+import no.priv.garshol.duke.LinkDatabase;
 import no.priv.garshol.duke.LinkStatus;
 import no.priv.garshol.duke.Processor;
 import no.priv.garshol.duke.Property;
@@ -87,7 +88,7 @@ public class App {
         final IncrementalRecordLinkageMatchListener matchListener;
         final Processor processor;
         final Configuration config;
-        private final JDBCLinkDatabase linkDatabase;
+        private final LinkDatabase linkDatabase;
         private final IncrementalRecordLinkageLuceneDatabase luceneDatabase;
         final Lock lock = new ReentrantLock();
 
@@ -95,7 +96,7 @@ public class App {
                       String linkMode, Map<String, IncrementalRecordLinkageDataSource> dataSetId2dataSource,
                       IncrementalRecordLinkageMatchListener matchListener, Processor processor,
                       Configuration config,
-                      JDBCLinkDatabase linkDatabase,
+                      LinkDatabase linkDatabase,
                       IncrementalRecordLinkageLuceneDatabase luceneDatabase
                       ) {
             this.name = recordLinkageName;
@@ -139,12 +140,12 @@ public class App {
         final Configuration config;
         final IncrementalDeduplicationLuceneDatabase luceneDatabase;
         final Lock lock = new ReentrantLock();
-        final JDBCLinkDatabase linkDatabase;
+        final LinkDatabase linkDatabase;
 
         Deduplication(String deduplicationName,
                       Map<String, IncrementalDeduplicationDataSource> dataSetId2dataSource,
                       IncrementalDeduplicationMatchListener matchListener,
-                      JDBCLinkDatabase linkDatabase,
+                      LinkDatabase linkDatabase,
                       Processor processor,
                       Configuration config,
                       IncrementalDeduplicationLuceneDatabase luceneDatabase
@@ -277,6 +278,12 @@ public class App {
                         ConfigurationImpl config = parseDukeConfig("deduplication'" + deduplicationName + "'",
                                                                    element);
 
+                        Node dukeProcessorThreadsElement = element.getAttributes().getNamedItem("duke-processor-threads");
+                        Integer dukeProcessorThreads = null;
+                        if (dukeProcessorThreadsElement != null) {
+                            dukeProcessorThreads = Integer.parseInt(dukeProcessorThreadsElement.getTextContent());
+                        }
+
                         // Add the special "id", "datasetId" properties.
                         List<Property> properties = config.getProperties();
                         for (Property property : properties) {
@@ -319,6 +326,9 @@ public class App {
                         luceneDatabase.setPath(luceneFolderPath.toString());
                         config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
+                        if (dukeProcessorThreads != null) {
+                            processor.setThreads(dukeProcessorThreads);
+                        }
 
                         Path h2DatabasePath = deduplicationDataFolder.resolve("linkdatabase");
                         File h2DatabaseFolder = h2DatabasePath.toFile().getParentFile();
@@ -332,8 +342,8 @@ public class App {
 
                         logger.info("    Using this folder for the h2 deduplication database: '{}'.", h2DatabasePath.toString());
 
-                        JDBCLinkDatabase linkDatabase = new JDBCLinkDatabase("org.h2.Driver",
-                                                                         "jdbc:h2://" + h2DatabasePath.toString(),
+                        ThreadSafeJDBCLinkDatabase linkDatabase = new ThreadSafeJDBCLinkDatabase("org.h2.Driver",
+                                                                         "jdbc:h2://" + h2DatabasePath.toString() + ";MULTI_THREADED=TRUE",
                                                                          "h2",
                                                                          null
                                                                          );
@@ -402,6 +412,12 @@ public class App {
 
                         String linkMode = element.getAttributes().getNamedItem("link-mode").getTextContent();
 
+                        Node dukeProcessorThreadsElement = element.getAttributes().getNamedItem("duke-processor-threads");
+                        Integer dukeProcessorThreads = null;
+                        if (dukeProcessorThreadsElement != null) {
+                            dukeProcessorThreads = Integer.parseInt(dukeProcessorThreadsElement.getTextContent());
+                        }
+
                         Path recordLinkDataFolder = rootDataFolder.resolve("recordLinkage").resolve(recordLinkageName);
 
                         ConfigurationImpl config = parseDukeConfig("recordLinkage '" + recordLinkageName + "'",
@@ -453,6 +469,9 @@ public class App {
                         luceneDatabase.setPath(luceneFolderPath.toString());
                         config.setDatabase(luceneDatabase);
                         Processor processor = new Processor(config, false);
+                        if (dukeProcessorThreads != null) {
+                            processor.setThreads(dukeProcessorThreads);
+                        }
 
                         Path h2DatabasePath = recordLinkDataFolder.resolve("recordlinkdatabase");
                         File h2DatabaseFolder = h2DatabasePath.toFile().getParentFile();
@@ -466,10 +485,10 @@ public class App {
 
                         logger.info("    Using this folder for the h2 record-link database: '{}'.", h2DatabasePath.toString());
 
-                        JDBCLinkDatabase linkDatabase = new JDBCLinkDatabase("org.h2.Driver",
-                                                                             "jdbc:h2://" + h2DatabasePath.toString(),
-                                                                             "h2",
-                                                                             null
+                        ThreadSafeJDBCLinkDatabase linkDatabase = new ThreadSafeJDBCLinkDatabase("org.h2.Driver",
+                                                                                   "jdbc:h2://" + h2DatabasePath.toString() + ";MULTI_THREADED=TRUE",
+                                                                                   "h2",
+                                                                                   null
                         );
                         linkDatabase.init();
                         IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = new IncrementalRecordLinkageMatchListener(
@@ -713,7 +732,7 @@ public class App {
             IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
 
             IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
-            JDBCLinkDatabase linkDatabase = recordLinkage.linkDatabase;
+            LinkDatabase linkDatabase = recordLinkage.linkDatabase;
             try {
                 // When we get a record with "_deleted"=True, we must do the following:
                 // 1. Delete the record from the lucene index
@@ -926,7 +945,7 @@ public class App {
                 IncrementalDeduplicationLuceneDatabase database = deduplication.luceneDatabase;
 
                 IncrementalDeduplicationMatchListener incrementalDeduplicationMatchListener = deduplication.matchListener;
-                JDBCLinkDatabase linkDatabase = deduplication.linkDatabase;
+                LinkDatabase linkDatabase = deduplication.linkDatabase;
 
                 try {
                     for (Record record : deletedRecords) {
