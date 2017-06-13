@@ -22,11 +22,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -53,6 +51,7 @@ import org.xml.sax.SAXException;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 
@@ -60,7 +59,6 @@ import no.priv.garshol.duke.ConfigLoader;
 import no.priv.garshol.duke.Configuration;
 import no.priv.garshol.duke.ConfigurationImpl;
 import no.priv.garshol.duke.DataSource;
-import no.priv.garshol.duke.InMemoryLinkDatabase;
 import no.priv.garshol.duke.JDBCLinkDatabase;
 import no.priv.garshol.duke.Link;
 import no.priv.garshol.duke.LinkDatabase;
@@ -81,6 +79,7 @@ public class App {
     private String configAsString;
     private File tempFolder;
     private File tempFolderFile;
+    Gson gson = new Gson();
 
     private class RecordLinkage {
         final private String name;
@@ -665,133 +664,21 @@ public class App {
         });
 
 
-        get("/recordlinkage/:recordLinkage/:datasetId", (Request req, Response res) -> {
-                String recordLinkageName = req.params("recordLinkage");
-                String datasetId = req.params("datasetId");
+        get("/recordlinkage/:recordLinkage/:datasetId", app::getRecordlinkage);
 
-                if (recordLinkageName.isEmpty()) {
-                    halt(404, "The recordLinkage cannot be an empty string!");
-                }
-
-                if (datasetId.isEmpty()) {
-                    halt(404, "The datasetId cannot be an empty string!");
-                }
-
-                RecordLinkage recordLinkage = app.recordLinkages.get(recordLinkageName);
-                if (recordLinkage == null) {
-                    halt(404, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
-                                            recordLinkageName));
-                }
-
-                IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
-                if (dataSource == null) {
-                    halt(404, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
-                }
-            halt(405, "This endpoint only supports POST requests.");
-            return "";
-        });
+        get("/recordlinkage/:recordLinkage/:datasetId/httptransform", app::getRecordlinkage);
 
         /*
          * This endpoint is used to do record linkage. The results can be read from the
          * GET /recordlinkage/:recordLinkage endpoint.
          */
-        post("/recordlinkage/:recordLinkage/:datasetId", (Request req, Response res) -> {
-            String recordLinkageName = req.params("recordLinkage");
-            String datasetId = req.params("datasetId");
+        post("/recordlinkage/:recordLinkage/:datasetId", app::postRecordlinkage);
 
-            if (recordLinkageName.isEmpty()) {
-                halt(404, "The recordLinkage cannot be an empty string!");
-            }
-
-            if (datasetId.isEmpty()) {
-                halt(404, "The datasetId cannot be an empty string!");
-            }
-
-            RecordLinkage recordLinkage = app.recordLinkages.get(recordLinkageName);
-            if (recordLinkage == null) {
-                halt(404, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
-                                        recordLinkageName));
-            }
-
-            IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
-            if (dataSource == null) {
-                halt(404, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
-            }
-
-
-            recordLinkage.lock.lock();
-
-            res.type("application/json");
-
-            JsonArray elementsInBatch;
-            // We assume that we get the records in small batches, so that it is ok to load the entire request into memory.
-            String requestBody = req.body();
-            try {
-                elementsInBatch = gson.fromJson(requestBody, JsonArray.class);
-            } catch (JsonSyntaxException e) {
-                // The request can contain either an array of entities, or one single entity.
-                JsonObject singleElement = gson.fromJson(requestBody, JsonObject.class);
-                elementsInBatch = new JsonArray();
-                elementsInBatch.add(singleElement);
-            }
-
-            // use the DataSource for the datasetId to convert the JsonObjects into Record objects.
-            dataSource.setDatasetEntitiesBatch(elementsInBatch);
-            RecordIterator it = dataSource.getRecords();
-            List<Record> records = new LinkedList<>();
-            List<Record> deletedRecords = new LinkedList<>();
-            while (it.hasNext()) {
-                Record record = it.next();
-                if ("true".equals(record.getValue(DELETED_PROPERTY_NAME))) {
-                    deletedRecords.add(record);
-                } else {
-                    records.add(record);
-                }
-            }
-
-            Processor processor = recordLinkage.processor;
-            IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
-
-
-            IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
-            LinkDatabase linkDatabase = recordLinkage.linkDatabase;
-            try {
-                // When we get a record with "_deleted"=True, we must do the following:
-                // 1. Delete the record from the lucene index
-                // 2. If the record appears in the RECORDLINKAGE table:
-                //      Mark that row as "deleted=true".
-                //      Mark the other record in that row as needing a rematching (add a row to the RECORDS_THAT_NEEDS_REMATCH table)
-                // 3. If the record appears in the RECORDS_THAT_NEEDS_REMATCH table:
-                //      Delete the row.
-                Set<String> recordsIdThatNeedsReprocessing = new HashSet<>();
-                for (Record record : deletedRecords) {
-                    String recordId = record.getValue("ID");
-
-                    // 1. mark the record as deleted in the lucene index. We cant just delete it alltogether, since we
-                    //    need to do a lookup in lucine in the GET-handler (since the LinkDatabase doesn't contain all
-                    //    the information we need)
-                    database.index(record);
-
-                    // retract all links for this record
-                    for (Link link : linkDatabase.getAllLinksFor(recordId)) {
-                        link.retract();
-                        linkDatabase.assertLink(link);
-                    }
-                }
-
-                // Process the actual records in the batch.
-                if (!records.isEmpty()) {
-                    processor.deduplicate(records);
-                }
-
-                Writer writer = res.raw().getWriter();
-                writer.append("{\"success\": true}");
-                writer.flush();
-                return "";
-            } finally {
-                recordLinkage.lock.unlock();
-            }
-        });
+        /*
+         * This endpoint is used to do record linkage as a http transform. The results are returned
+         * in the http response.
+         */
+        post("/recordlinkage/:recordLinkage/:datasetId/httptransform", app::postRecordlinkageHttpTransform);
 
         get("/recordlinkage/:recordLinkage", (req, res) -> {
             try {
@@ -879,133 +766,21 @@ public class App {
             return "";
         });
 
+        get("/deduplication/:deduplication/:datasetId", app::getDeduplicationDatasetId);
 
+        get("/deduplication/:deduplication/:datasetId/httptransform", app::getDeduplicationDatasetId);
 
-        get("/deduplication/:deduplication/:datasetId", (Request req, Response res) -> {
-            String deduplicationName = req.params("deduplication");
-            String datasetId = req.params("datasetId");
-
-            if (deduplicationName.isEmpty()) {
-                halt(404, "The deduplicationName cannot be an empty string!");
-            }
-
-            if (datasetId.isEmpty()) {
-                halt(404, "The datasetId cannot be an empty string!");
-            }
-
-            Deduplication deduplication = app.deduplications.get(deduplicationName);
-            if (deduplication == null) {
-                halt(404, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
-                                        deduplicationName));
-            }
-
-            IncrementalDeduplicationDataSource dataSource = deduplication.getDataSources().get(datasetId);
-            if (dataSource == null) {
-                halt(404, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
-            }
-
-             halt(405, "This endpoint only supports POST requests.");
-             return "";
-        });
-        
         /*
          * This endpoint is used to do deduplication. The results can be read from the
          * GET /deduplication/:deduplication endpoint.
          */
-        post("/deduplication/:deduplication/:datasetId", (Request req, Response res) -> {
-            String deduplicationName = req.params("deduplication");
-            String datasetId = req.params("datasetId");
+        post("/deduplication/:deduplication/:datasetId", app::postDeduplication);
 
-            if (deduplicationName.isEmpty()) {
-                halt(404, "The deduplicationName cannot be an empty string!");
-            }
-
-            if (datasetId.isEmpty()) {
-                halt(404, "The datasetId cannot be an empty string!");
-            }
-
-            Deduplication deduplication = app.deduplications.get(deduplicationName);
-            if (deduplication == null) {
-                halt(404, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
-                                        deduplicationName));
-            }
-
-            IncrementalDeduplicationDataSource dataSource = deduplication.getDataSources().get(datasetId);
-            if (dataSource == null) {
-                halt(404, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
-            }
-
-            deduplication.lock.lock();
-            try {
-
-                res.type("application/json");
-
-                JsonArray elementsInBatch;
-                // We assume that we get the records in small batches, so that it is ok to load the entire request into memory.
-                String requestBody = req.body();
-                try {
-                    elementsInBatch = gson.fromJson(requestBody, JsonArray.class);
-                } catch (JsonSyntaxException e) {
-                    // The request can contain either an array of entities, or one single entity.
-                    JsonObject singleElement = gson.fromJson(requestBody, JsonObject.class);
-                    elementsInBatch = new JsonArray();
-                    elementsInBatch.add(singleElement);
-                }
-
-                // use the DataSource for the datasetId to convert the JsonObjects into Record objects.
-                dataSource.setDatasetEntitiesBatch(elementsInBatch);
-                RecordIterator it = dataSource.getRecords();
-                List<Record> records = new LinkedList<>();
-                List<Record> deletedRecords = new LinkedList<>();
-                while (it.hasNext()) {
-                    Record record = it.next();
-                    if ("true".equals(record.getValue("_deleted"))) {
-                        deletedRecords.add(record);
-                    } else {
-                        records.add(record);
-                    }
-                }
-
-                Processor processor = deduplication.processor;
-                IncrementalDeduplicationLuceneDatabase database = deduplication.luceneDatabase;
-
-                IncrementalDeduplicationMatchListener incrementalDeduplicationMatchListener = deduplication.matchListener;
-                LinkDatabase linkDatabase = deduplication.linkDatabase;
-
-                try {
-                    for (Record record : deletedRecords) {
-                        String recordId = record.getValue("ID");
-
-                        // 1. mark the record as deleted in the lucene index. We cant just delete it alltogether, since we
-                        //    need to do a lookup in lucine in the GET-handler (since the LinkDatabase doesn't contain all
-                        //    the information we need)
-                        database.index(record);
-
-                        // retract all links for this record
-                        for (Link link : linkDatabase.getAllLinksFor(recordId)) {
-                            link.retract();
-                            linkDatabase.assertLink(link);
-                        }
-                    }
-
-                    // Process the actual records in the batch.
-                    if (!records.isEmpty()) {
-                        processor.deduplicate(records);
-                    }
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-
-                res.status(200);
-                res.type("application/json");
-                Writer writer = res.raw().getWriter();
-                writer.append("{\"success\": true}");
-                writer.flush();
-                return "";
-            } finally {
-                deduplication.lock.unlock();
-            }
-        });
+        /*
+         * This endpoint is used to do deduplication in a http transform. The results can be read from the
+         * http response.
+         */
+        post("/deduplication/:deduplication/:datasetId/httptransform", app::postDeduplicationHttpTransform);
 
         get("/deduplication/:deduplication", (req, res) -> {
             try {
@@ -1088,5 +863,320 @@ public class App {
             }
             return "";
         });
+    }
+
+    private Object getDeduplicationDatasetId(Request req, Response res) {
+        String deduplicationName = req.params("deduplication");
+        String datasetId = req.params("datasetId");
+
+        if (deduplicationName.isEmpty()) {
+            halt(404, "The deduplicationName cannot be an empty string!");
+        }
+
+        if (datasetId.isEmpty()) {
+            halt(404, "The datasetId cannot be an empty string!");
+        }
+
+        Deduplication deduplication = this.deduplications.get(deduplicationName);
+        if (deduplication == null) {
+            halt(404, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
+                                    deduplicationName));
+        }
+
+        IncrementalDeduplicationDataSource dataSource = deduplication.getDataSources().get(datasetId);
+        if (dataSource == null) {
+            halt(404, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
+        }
+
+        halt(405, "This endpoint only supports POST requests.");
+        return "";
+    }
+
+    private Object postDeduplicationHttpTransform(Request req, Response res) throws IOException {
+        return internalPostDeduplication(req, res, true);
+    }
+
+    private Object postDeduplication(Request req, Response res) throws IOException {
+        return internalPostDeduplication(req, res, false);
+    }
+
+    private Object internalPostDeduplication(Request req, Response res, boolean isHttpTransform) throws IOException {
+        String deduplicationName = req.params("deduplication");
+        String datasetId = req.params("datasetId");
+
+        if (deduplicationName.isEmpty()) {
+            halt(404, "The deduplicationName cannot be an empty string!");
+        }
+
+        if (datasetId.isEmpty()) {
+            halt(404, "The datasetId cannot be an empty string!");
+        }
+
+        Deduplication deduplication = this.deduplications.get(deduplicationName);
+        if (deduplication == null) {
+            halt(404, String.format("Unknown deduplication '%s'! (All deduplications must be specified in the configuration)",
+                                    deduplicationName));
+        }
+
+        IncrementalDeduplicationDataSource dataSource = deduplication.getDataSources().get(datasetId);
+        if (dataSource == null) {
+            halt(404, String.format("Unknown dataset-id '%s' for the deduplication '%s'!", datasetId, deduplicationName));
+        }
+
+        deduplication.lock.lock();
+        try {
+
+            res.type("application/json");
+
+            JsonArray elementsInBatch;
+            boolean requestContainedSingleEntity;
+            // We assume that we get the records in small batches, so that it is ok to load the entire request into memory.
+            String requestBody = req.body();
+            try {
+                elementsInBatch = gson.fromJson(requestBody, JsonArray.class);
+                requestContainedSingleEntity = false;
+            } catch (JsonSyntaxException e) {
+                // The request can contain either an array of entities, or one single entity.
+                JsonObject singleElement = gson.fromJson(requestBody, JsonObject.class);
+                elementsInBatch = new JsonArray();
+                elementsInBatch.add(singleElement);
+                requestContainedSingleEntity = true;
+            }
+
+            // use the DataSource for the datasetId to convert the JsonObjects into Record objects.
+            dataSource.setDatasetEntitiesBatch(elementsInBatch);
+            RecordIterator it = dataSource.getRecords();
+            List<Record> records = new LinkedList<>();
+            List<Record> deletedRecords = new LinkedList<>();
+            while (it.hasNext()) {
+                Record record = it.next();
+                if ("true".equals(record.getValue("_deleted"))) {
+                    deletedRecords.add(record);
+                } else {
+                    records.add(record);
+                }
+            }
+
+            Processor processor = deduplication.processor;
+            IncrementalDeduplicationLuceneDatabase database = deduplication.luceneDatabase;
+
+            IncrementalDeduplicationMatchListener incrementalDeduplicationMatchListener = deduplication.matchListener;
+            LinkDatabase linkDatabase = deduplication.linkDatabase;
+
+            try {
+                for (Record record : deletedRecords) {
+                    String recordId = record.getValue("ID");
+
+                    // 1. mark the record as deleted in the lucene index. We cant just delete it alltogether, since we
+                    //    need to do a lookup in lucine in the GET-handler (since the LinkDatabase doesn't contain all
+                    //    the information we need)
+                    database.index(record);
+
+                    // retract all links for this record
+                    for (Link link : linkDatabase.getAllLinksFor(recordId)) {
+                        link.retract();
+                        linkDatabase.assertLink(link);
+                    }
+                }
+
+                // Process the actual records in the batch.
+                if (!records.isEmpty()) {
+                    processor.deduplicate(records);
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+
+            res.status(200);
+            res.type("application/json");
+            Writer writer = res.raw().getWriter();
+            if (isHttpTransform) {
+                writeHttpTransformResponse(elementsInBatch,
+                                           requestContainedSingleEntity,
+                                           incrementalDeduplicationMatchListener,
+                                           writer
+                                           );
+            } else {
+                writer.append("{\"success\": true}");
+            }
+            writer.flush();
+            return "";
+        } finally {
+            deduplication.lock.unlock();
+        }
+    }
+
+    private Object getRecordlinkage(Request req, Response res) throws IOException
+    {
+        String recordLinkageName = req.params("recordLinkage");
+        String datasetId = req.params("datasetId");
+
+        if (recordLinkageName.isEmpty()) {
+            halt(404, "The recordLinkage cannot be an empty string!");
+        }
+
+        if (datasetId.isEmpty()) {
+            halt(404, "The datasetId cannot be an empty string!");
+        }
+
+        RecordLinkage recordLinkage = this.recordLinkages.get(recordLinkageName);
+        if (recordLinkage == null) {
+            halt(404, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
+                                    recordLinkageName));
+        }
+
+        IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
+        if (dataSource == null) {
+            halt(404, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
+        }
+        halt(405, "This endpoint only supports POST requests.");
+        return "";
+    }
+
+    private Object postRecordlinkageHttpTransform(Request req, Response res) throws IOException {
+        return internalPostRecordlinkage(req, res, true);
+    }
+
+    private Object postRecordlinkage(Request req, Response res) throws IOException {
+        return internalPostRecordlinkage(req, res, false);
+    }
+
+    private Object internalPostRecordlinkage(Request req, Response res, boolean isHttpTransform) throws IOException {
+
+        String recordLinkageName = req.params("recordLinkage");
+        String datasetId = req.params("datasetId");
+
+        if (recordLinkageName.isEmpty()) {
+            halt(404, "The recordLinkage cannot be an empty string!");
+        }
+
+        if (datasetId.isEmpty()) {
+            halt(404, "The datasetId cannot be an empty string!");
+        }
+
+        RecordLinkage recordLinkage = this.recordLinkages.get(recordLinkageName);
+        if (recordLinkage == null) {
+            halt(404, String.format("Unknown recordLinkage '%s'! (All recordLinkages must be specified in the configuration)",
+                                    recordLinkageName));
+        }
+
+        IncrementalRecordLinkageDataSource dataSource = recordLinkage.dataSetId2dataSource.get(datasetId);
+        if (dataSource == null) {
+            halt(404, String.format("Unknown dataset-id '%s' for the recordLinkage '%s'!", datasetId, recordLinkageName));
+        }
+
+        Processor processor = recordLinkage.processor;
+        IncrementalRecordLinkageLuceneDatabase database = (IncrementalRecordLinkageLuceneDatabase) processor.getDatabase();
+
+        IncrementalRecordLinkageMatchListener incrementalRecordLinkageMatchListener = recordLinkage.matchListener;
+        LinkDatabase linkDatabase = recordLinkage.linkDatabase;
+
+        try {  // Use a try-finally to always release the recordLinkage.lock
+            recordLinkage.lock.lock();
+            database.setIndexingIsDisabled(false);
+
+            res.type("application/json");
+
+            JsonArray elementsInBatch;
+            // We assume that we get the records in small batches, so that it is ok to load the entire request into memory.
+            String requestBody = req.body();
+            boolean requestContainedSingleEntity;
+            try {
+                elementsInBatch = gson.fromJson(requestBody, JsonArray.class);
+                requestContainedSingleEntity = false;
+            } catch (JsonSyntaxException e) {
+                // The request can contain either an array of entities, or one single entity.
+                JsonObject singleElement = gson.fromJson(requestBody, JsonObject.class);
+                elementsInBatch = new JsonArray();
+                elementsInBatch.add(singleElement);
+                requestContainedSingleEntity = true;
+            }
+
+            // use the DataSource for the datasetId to convert the JsonObjects into Record objects.
+            dataSource.setDatasetEntitiesBatch(elementsInBatch);
+            RecordIterator it = dataSource.getRecords();
+            List<Record> records = new LinkedList<>();
+            List<Record> deletedRecords = new LinkedList<>();
+            while (it.hasNext()) {
+                Record record = it.next();
+                if ("true".equals(record.getValue(DELETED_PROPERTY_NAME))) {
+                    deletedRecords.add(record);
+                } else {
+                    records.add(record);
+                }
+            }
+
+            if (isHttpTransform) {
+                database.setIndexingIsDisabled(true);
+                incrementalRecordLinkageMatchListener.setLinkDatabaseUpdatedIsDisabled(true);
+            } else {
+                // When we get a record with "_deleted"=True, we must do the following:
+                // 1. Delete the record from the lucene index
+                // 2. If the record appears in the RECORDLINKAGE table:
+                //      Mark that row as "deleted=true".
+                //      Mark the other record in that row as needing a rematching (add a row to the RECORDS_THAT_NEEDS_REMATCH table)
+                // 3. If the record appears in the RECORDS_THAT_NEEDS_REMATCH table:
+                //      Delete the row.
+                for (Record record : deletedRecords) {
+                    String recordId = record.getValue("ID");
+
+                    // 1. mark the record as deleted in the lucene index. We cant just delete it alltogether, since we
+                    //    need to do a lookup in lucine in the GET-handler (since the LinkDatabase doesn't contain all
+                    //    the information we need)
+                    database.index(record);
+
+                    // retract all links for this record
+                    for (Link link : linkDatabase.getAllLinksFor(recordId)) {
+                        link.retract();
+                        linkDatabase.assertLink(link);
+                    }
+                }
+            }
+
+            // Process the actual records in the batch.
+            if (!records.isEmpty()) {
+                processor.deduplicate(records);
+            }
+
+            Writer writer = res.raw().getWriter();
+            if (isHttpTransform) {
+                writeHttpTransformResponse(elementsInBatch,
+                                           requestContainedSingleEntity,
+                                           incrementalRecordLinkageMatchListener,
+                                           writer
+                                           );
+            } else {
+                writer.append("{\"success\": true}");
+            }
+            writer.flush();
+            return "";
+        } finally {
+            database.setIndexingIsDisabled(false);
+            incrementalRecordLinkageMatchListener.setLinkDatabaseUpdatedIsDisabled(false);
+            recordLinkage.lock.unlock();
+        }
+    }
+
+    private void writeHttpTransformResponse(JsonArray elementsInBatch,
+                                            boolean requestContainedSingleEntity,
+                                            BaseLinkDatabaseMatchListener matchListener,
+                                            Writer writer) {
+        JsonArray responseObjects = new JsonArray();
+        for (JsonElement sourceElement: elementsInBatch) {
+            JsonObject sourceObject = sourceElement.getAsJsonObject();
+            JsonObject responseObject = gson.fromJson(gson.toJson(sourceObject),
+                                                      sourceObject.getClass());
+
+            JsonArray dukeLinks = matchListener.getLinksForObject(responseObject);
+
+            responseObject.add("duke_links", dukeLinks);
+            responseObjects.add(responseObject);
+        }
+        if (requestContainedSingleEntity && responseObjects.size() == 1) {
+            gson.toJson(responseObjects.get(0), writer);
+        } else {
+            gson.toJson(responseObjects, writer);
+        }
+
     }
 }

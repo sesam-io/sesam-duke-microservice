@@ -29,7 +29,7 @@ import no.priv.garshol.duke.Record;
 import no.priv.garshol.duke.matchers.LinkDatabaseMatchListener;
 import no.priv.garshol.duke.matchers.MatchListener;
 
-public class IncrementalRecordLinkageMatchListener extends LinkDatabaseMatchListener {
+public class IncrementalRecordLinkageMatchListener extends BaseLinkDatabaseMatchListener {
 
     private final Logger logger;
     private long batchStartTime;
