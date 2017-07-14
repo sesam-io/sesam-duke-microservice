@@ -76,6 +76,9 @@ import spark.template.jinjava.JinjavaEngine;
 
 public class App {
 
+    private static final String MIN_RELEVANCE = "MIN_RELEVANCE";
+    private static final String FUZZY_SEARCH = "FUZZY_SEARCH";
+    private static final String MAX_SEARCH_HITS = "MAX_SEARCH_HITS";
     private String configAsString;
     private File tempFolder;
     private File tempFolderFile;
@@ -324,6 +327,7 @@ public class App {
                         logger.info("    Created the Duke config for the deduplication '{}' ok.", deduplicationName);
 
                         IncrementalDeduplicationLuceneDatabase luceneDatabase = new IncrementalDeduplicationLuceneDatabase();
+                        configureDatabase(luceneDatabase);
                         Path luceneFolderPath = deduplicationDataFolder.resolve("lucene-index");
                         File luceneFolderFile = luceneFolderPath.toFile();
                         boolean wasCreated = luceneFolderFile.mkdirs();
@@ -444,6 +448,7 @@ public class App {
                         logger.info("    Created the Duke config for the recordLinkage '{}' ok.", recordLinkageName);
 
                         IncrementalRecordLinkageLuceneDatabase luceneDatabase = new IncrementalRecordLinkageLuceneDatabase();
+                        configureDatabase(luceneDatabase);
                         Path luceneFolderPath = recordLinkDataFolder.resolve("lucene-index");
                         File luceneFolderFile = luceneFolderPath.toFile();
                         boolean wasCreated = luceneFolderFile.mkdirs();
@@ -540,6 +545,22 @@ public class App {
         this.deduplications = newDeduplications;
         this.recordLinkages = newRecordLinkages;
         logger.info("Done parsing the config-file. The config can be read from the '/config' endpoint with a GET-request, and updated with a PUT-request.");
+    }
+
+    private void configureDatabase(IncrementalLuceneDatabase luceneDatabase) {
+        // moved out from database to make upgrades easier
+        luceneDatabase.setMinRelevance(0.9f);
+        luceneDatabase.setFuzzySearch(false);
+        luceneDatabase.setMaxSearchHits(10);
+        if (System.getenv(MIN_RELEVANCE) != null) {
+            luceneDatabase.setMinRelevance(Float.parseFloat(System.getenv(MIN_RELEVANCE)));
+        }
+        if (System.getenv(FUZZY_SEARCH) != null) {
+            luceneDatabase.setFuzzySearch(Boolean.parseBoolean(System.getenv(FUZZY_SEARCH)));
+        }
+        if (System.getenv(MAX_SEARCH_HITS) != null) {
+            luceneDatabase.setMaxSearchHits(Integer.parseInt(System.getenv(MAX_SEARCH_HITS)));
+        }
     }
 
     private LinkDatabase createLinkDatabase(Element element, Path dataFolder, boolean isRecordLinkage) {

@@ -84,9 +84,6 @@ public abstract class IncrementalLuceneDatabase implements Database {
     public IncrementalLuceneDatabase() {
         this.analyzer = new StandardAnalyzer(Version.LUCENE_CURRENT);
         this.maintracker = new EstimateResultTracker();
-        this.max_search_hits = 10;
-        this.fuzzy_search = false; // on by default
-        this.min_relevance = 0.9f;
         this.logger = LoggerFactory.getLogger("IncrementalLuceneDatabase");
     }
 
